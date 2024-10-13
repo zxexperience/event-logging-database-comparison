@@ -1,2 +1,2 @@
 # event-logging-db-comparison
-MariaDB vs. Redis Performance Comparison
+MariaDB vs. InfluxDB Performance Comparison
