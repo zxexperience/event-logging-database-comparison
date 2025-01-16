@@ -59,7 +59,80 @@ def insert_event_with_random_timestamp_mariadb(timestamp):
     conn.close()
 
     return True
-    
+
+def get_db_connection():
+    """
+    Establishes a connection to the MariaDB database.
+
+    Returns:
+        conn: The database connection object.
+        cursor: The database cursor object.
+    """
+    db_config = {
+        'host': os.environ.get('MARIADB_HOST', 'localhost'),
+        'port': int(os.environ.get('MARIADB_PORT', 3306)),
+        'user': os.environ.get('MARIADB_USER', 'root'),
+        'password': os.environ.get('MARIADB_PASSWORD', ''),
+        'database': os.environ.get('MARIADB_DATABASE', 'test_db')
+    }
+
+    conn = mariadb.connect(**db_config)
+    cursor = conn.cursor()
+    return conn, cursor
+
+def execute_query(query, params=None):
+    """
+    Executes a given query on the MariaDB database.
+
+    Args:
+        query (str): The SQL query to execute.
+        params (tuple): The parameters to pass to the query.
+
+    Returns:
+        bool: True if the operation was successful, False otherwise.
+    """
+    try:
+        conn, cursor = get_db_connection()
+        cursor.execute(query, params)
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True
+    except mariadb.Error as e:
+        print(f"Error executing query: {e}")
+        return False
+
+def fetch_query_results(query, params=None):
+    """
+    Fetches results from a given query on the MariaDB database.
+
+    Args:
+        query (str): The SQL query to execute.
+        params (tuple): The parameters to pass to the query.
+
+    Returns:
+        list: A list of dictionaries containing the query results.
+    """
+    try:
+        conn, cursor = get_db_connection()
+        cursor.execute(query, params)
+        results = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return results
+    except mariadb.Error as e:
+        print(f"Error fetching query results: {e}")
+        return []
+
+def clear_events_table():
+    """
+    Clears all rows from the Event table in the MariaDB database.
+
+    Returns:
+        bool: True if the operation was successful, False otherwise.
+    """
+    clear_query = "DELETE FROM Event"
+    return execute_query(clear_query)
 
 def insert_events_mariadb(events_data):
     """
@@ -76,93 +149,100 @@ def insert_events_mariadb(events_data):
     Returns:
         bool: True if the operation was successful, False otherwise.
     """
-    # Database connection parameters
-    db_config = {
-        'host': os.environ.get('MARIADB_HOST', 'localhost'),
-        'port': int(os.environ.get('MARIADB_PORT', 3306)),
-        'user': os.environ.get('MARIADB_USER', 'root'),
-        'password': os.environ.get('MARIADB_PASSWORD', ''),
-        'database': os.environ.get('MARIADB_DATABASE', 'test_db')
-    }
+    insert_query = """
+    INSERT INTO Event (timestamp, message, severity_ID, event_type_ID, source_ID)
+    VALUES (%s, %s, %s, %s, %s)
+    """
+
+    values = [
+        (
+            event_data['timestamp'],
+            event_data['message'],
+            event_data['severity_ID'],
+            event_data['event_type_ID'],
+            event_data['source_ID']
+        )
+        for event_data in events_data
+    ]
 
     try:
-        # Establish the connection
-        conn = mariadb.connect(**db_config)
-        cursor = conn.cursor()
-
-        # Validate message lengths
-        for event_data in events_data:
-            if len(event_data['message']) > 255:
-                raise ValueError("Message length exceeds 255 characters.")
-
-        # Insert query
-        insert_query = """
-        INSERT INTO Event (timestamp, message, severity_ID, event_type_ID, source_ID)
-        VALUES (%s, %s, %s, %s, %s)
-        """
-
-        # Prepare data for insertion
-        values = [
-            (
-                event_data['timestamp'],
-                event_data['message'],
-                event_data['severity_ID'],
-                event_data['event_type_ID'],
-                event_data['source_ID']
-            )
-            for event_data in events_data
-        ]
-
-        # Execute the query
+        conn, cursor = get_db_connection()
         cursor.executemany(insert_query, values)
-
-        # Commit the transaction
         conn.commit()
-        # Close the connection
+        print(f"Inserted {len(values)} rows into the Event table.")
         cursor.close()
         conn.close()
-
         return True
     except (mariadb.Error, ValueError) as e:
         print(f"Error inserting events into MariaDB: {e}")
         return False
 
+def delete_events_mariadb(num_entries):
+    """
+    Deletes entries from the Event table in the MariaDB database.
 
+    Args:
+        num_entries (int): The number of entries to delete, starting from primary key 1.
 
+    Returns:
+        bool: True if the operation was successful, False otherwise.
+    """
+    delete_query = """
+    DELETE FROM Event
+    WHERE id BETWEEN 1 AND %s
+    """
+    return execute_query(delete_query, (num_entries,))
 
+def select_simple_events_mariadb():
+    """
+    Selects events from the MariaDB database based on specified criteria.
 
+    Returns:
+        list: A list of dictionaries, each containing the selected event data.
+    """
+    select_query_severity = """
+    SELECT * FROM Event
+    WHERE severity_ID = 2
+    """
+    results = fetch_query_results(select_query_severity)
+    events_data = [
+        {
+            'timestamp': event[0],
+            'message': event[1],
+            'severity_ID': event[2],
+            'event_type_ID': event[3],
+            'source_ID': event[4]
+        }
+        for event in results
+    ]
+    return events_data
 
-def insert_event_with_random_timestamp_influxdb(timestamp):
-    client = get_influxdb_client()
-    if not client:
-        print("Failed to get InfluxDB client")
-        return False
+def select_join_events_mariadb():
+    """
+    Selects events from the MariaDB database based on specified criteria.
 
-    try:
-        #start_timestamp = datetime.now()
-        write_api = client.write_api(write_options=SYNCHRONOUS)
+    Returns:
+        list: A list of dictionaries, each containing the selected event data.
+    """
+    select_query_country = """
+    SELECT e.* FROM Event e
+    JOIN Source s ON e.source_ID = s.id
+    JOIN Location l ON s.location_id = l.id
+    WHERE l.country = 'Canada'
+    """
+    results = fetch_query_results(select_query_country)
+    events_data = [
+        {
+            'timestamp': event[0],
+            'message': event[1],
+            'severity_ID': event[2],
+            'event_type_ID': event[3],
+            'source_ID': event[4]
+        }
+        for event in results
+    ]
+    return events_data
 
-        point = Point('dummy_measurement') \
-            .time(timestamp) \
-            .tag('source', 'fastapi_app') \
-            .field('value', 1)
-
-        write_api.write(
-            bucket=os.environ['INFLUXDB_BUCKET'],
-            org=os.environ['INFLUXDB_ORG'],
-            record=point
-        )
-        #end_timestamp = datetime.now()
-
-        print(f"Successfully wrote point to InfluxDB: {point.to_line_protocol()}")
-        client.close()
-        return True
-    except Exception as e:
-        print(f"Error writing to InfluxDB: {e}")
-        print(f"Bucket: {os.environ['INFLUXDB_BUCKET']}")
-        print(f"Org: {os.environ['INFLUXDB_ORG']}")
-        print(f"Timestamp: {timestamp}")
-        return False
         
 def import_data_from_file(file_path):
     try:
@@ -178,7 +258,57 @@ def import_data_from_file(file_path):
         return []
     except json.JSONDecodeError as e:
         logging.error(f"Error: Failed to decode JSON: {e}")
-        return []       
+        return []    
+
+def process_data(operation, query_function=None):
+    data = import_data_from_file("./data_100000.json")
+    if not data:
+        return {'message': 'JSON decoding error!'}
+    
+    time_durations = []
+    spans = [1, 10, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000, 25000, 50000, 75000, 100000]
+    
+    for span in spans:
+        temp_data = data[:span]
+        if operation == "insert":
+            timestamp_start = datetime.now()
+            result = insert_events_mariadb(temp_data)
+            if not result:
+                return {'message': 'Error saving data in MariaDb!'}
+            timestamp_end = datetime.now()
+        elif operation == "delete":
+            result = insert_events_mariadb(temp_data)
+            if not result:
+                return {'message': 'Error saving data in MariaDb!'}
+            timestamp_start = datetime.now()
+            result_2 = delete_events_mariadb(span)
+            if not result_2:
+                return {'message': 'Error deleting data in MariaDb!'}
+            timestamp_end = datetime.now()
+        elif operation == "query":
+            # Clear the table before inserting data
+            clear_result = clear_events_table()
+            if not clear_result:
+                return {'message': 'Error clearing Event table in MariaDb!'}
+            print(f"Table cleared for span {span}")
+            result = insert_events_mariadb(temp_data)
+            if not result:
+                return {'message': 'Error saving data in MariaDb!'}
+            print(f"Data inserted for span {span}")
+            timestamp_start = datetime.now()
+            result_2 = query_function()
+            if result_2 is None:
+                return {'message': 'Error querying data in MariaDb!'}
+            elif not result_2:
+                print(f"No matching records found for span {span}")
+            timestamp_end = datetime.now()
+            print(f"Data queried for span {span}")
+        
+        duration = timestamp_end - timestamp_start
+        time_durations.append((span, duration))
+    
+    time_durations_str = ', '.join(f"Timespan for {span} is {duration}" for span, duration in time_durations)
+    return {'message': f"All good! {time_durations_str}"}
 
 logging.basicConfig(level=logging.INFO)
 
@@ -205,24 +335,19 @@ def read_root():
         return {'message': 'Something went wrong with InfluxDB!'}
 
     return {'message': 'All good!'}
-    
+
 @app.get("/maria_create")
-def init_db():
-    data = import_data_from_file("./data_100000.json")
-    if (data == []):
-        return {'message': 'JSON decoding error!'}
-    time_durations = []
-    for span in [1, 10, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000, 25000, 50000, 75000, 100000]:
-        temp_data = data[:span]
-        timestamp_start = datetime.now()
-        result = insert_events_mariadb(temp_data)
-        if (not result):
-            return {'message': 'Error saving data in MariaDb!'}
-        timestamp_end = datetime.now()
-        duration = timestamp_end - timestamp_start
-        time_durations.append((span, duration))
-    
-    time_durations_str = ', '.join(f"Timespan for {span} is {duration}" for span, duration in time_durations)
-    return {'message': f"All good! {time_durations_str}"}
+def maria_create():
+    return process_data("insert")
 
+@app.get("/maria_delete")
+def maria_delete():
+    return process_data("delete")
 
+@app.get("/maria_simple_query")
+def maria_simple_query():
+    return process_data("query", select_simple_events_mariadb)
+
+@app.get("/maria_join_query")
+def maria_join_query():
+    return process_data("query", select_join_events_mariadb)
