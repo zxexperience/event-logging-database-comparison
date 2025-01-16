@@ -180,10 +180,6 @@ def import_data_from_file(file_path):
         logging.error(f"Error: Failed to decode JSON: {e}")
         return []       
 
-data = import_data_from_file("./data_1000.json")
-for record in data:
-    print(f"Record: {record}")
-
 logging.basicConfig(level=logging.INFO)
 
 app = FastAPI()
@@ -210,20 +206,23 @@ def read_root():
 
     return {'message': 'All good!'}
     
-@app.get("/init")
+@app.get("/maria_create")
 def init_db():
     data = import_data_from_file("./data_100000.json")
     if (data == []):
         return {'message': 'JSON decoding error!'}
     time_durations = []
-    for span in [1, 10, 100, 500, 1000, 2000, 5000]:
+    for span in [1, 10, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000, 25000, 50000, 75000, 100000]:
         temp_data = data[:span]
         timestamp_start = datetime.now()
         result = insert_events_mariadb(temp_data)
         if (not result):
             return {'message': 'Error saving data in MariaDb!'}
         timestamp_end = datetime.now()
-        time_durations.append(timestamp_end - timestamp_start)
+        duration = timestamp_end - timestamp_start
+        time_durations.append((span, duration))
+    
+    time_durations_str = ', '.join(f"Timespan for {span} is {duration}" for span, duration in time_durations)
+    return {'message': f"All good! {time_durations_str}"}
 
-    time_durations_str = ', '.join(str(duration) for duration in time_durations)
-    return {'message': f"All good! Time durations for each span: {time_durations_str}"}
+
