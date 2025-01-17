@@ -3,10 +3,11 @@ import random
 import json
 import logging
 import string
+import time
 from fastapi import FastAPI
 from datetime import datetime, timedelta
 import mariadb
-from influxdb_client import InfluxDBClient, Point
+from influxdb_client import InfluxDBClient, Point # type: ignore
 from influxdb_client.client.write_api import SYNCHRONOUS
 import matplotlib.pyplot as plt
 
@@ -281,33 +282,96 @@ def update_simple_events_mariadb():
             logging.error(f"Error fetching query results: {e}")
             return None
 
-
-def get_random_string(length):
-    chars = string.ascii_letters + string.digits
-    return ''.join(random.choice(chars) for _ in range(length))
-
-def get_random_timestamp():
-    start = datetime(2025, 1, 1)
-    end = datetime(2025, 12, 31)
-    random_date = start + timedelta(seconds=random.randint(0, int((end - start).total_seconds())))
-    return random_date.strftime("%Y-%m-%d %H:%M:%S")
+SAMPLE_DATA = {
+    "severities": [
+        {"name": "INFO", "description": "Informational message"},
+        {"name": "WARNING", "description": "Warning condition"},
+        {"name": "ERROR", "description": "Error condition"},
+        {"name": "CRITICAL", "description": "Critical condition"}
+    ],
+    "event_types": [
+        {"name": "SYSTEM_STATUS", "description": "System status update"},
+        {"name": "SECURITY_ALERT", "description": "Security-related event"},
+        {"name": "PERFORMANCE", "description": "Performance metric event"},
+        {"name": "USER_ACTION", "description": "User-initiated action"},
+    ],
+    "sources": [
+        {
+            "name": "web-server-01",
+            "ip_address": "192.168.1.100",
+            "location": {"name": "PL-01", "country": "Poland", "city": "Katowice"}
+        },
+        {
+            "name": "web-server-02",
+            "ip_address": "192.168.1.200",
+            "location": {"name": "PL-02", "country": "Poland", "city": "Gdansk"}
+        },
+        {
+            "name": "cache-01",
+            "ip_address": "192.168.2.100",
+            "location": {"name": "US-01", "country": "USA", "city": "New York"}
+        },
+        {
+            "name": "lb-01",
+            "ip_address": "192.168.3.100",
+            "location": {"name": "DE-01", "country": "Germany", "city": "Frankfurt"}
+        }
+    ],
+    "messages": {
+        "SYSTEM_STATUS": [
+            "System startup completed",
+            "System shutdown initiated",
+            "Service restart required",
+            "Memory usage at {}%",
+            "CPU utilization peaked at {}%"
+        ],
+        "SECURITY_ALERT": [
+            "Failed login attempt from IP {}",
+            "Suspicious activity detected",
+            "Firewall rule updated",
+            "New security patch applied",
+            "User account locked after {} attempts"
+        ],
+        "PERFORMANCE": [
+            "Response time exceeded {}ms",
+            "Database query took {}ms",
+            "Network latency increased to {}ms",
+            "Queue size reached {}"
+        ],
+        "USER_ACTION": [
+            "User {} logged in successfully",
+            "Password change attempted",
+            "Configuration updated by admin",
+            "New user account created"
+        ],
+    }
+}
 
 def generate_data(events_to_generate):
     data = []
     for _ in range(events_to_generate):
+        # Generate random timestamp with time variation (±12 hours)
+        reference_time = datetime.now()
+        time_variation = timedelta(hours=random.uniform(-12, 12))
+        timestamp = (reference_time + time_variation).strftime("%Y-%m-%d %H:%M:%S")
+
+        severity = random.choice(SAMPLE_DATA["severities"])
+        event_type = random.choice(SAMPLE_DATA["event_types"])
+        source = random.choice(SAMPLE_DATA["sources"])
+        message_template = random.choice(SAMPLE_DATA["messages"][event_type["name"]])
+        message = message_template.format(
+            *[random.randint(1, 100) for _ in range(message_template.count("{}"))]
+        )
+
         entry = {
-            "timestamp": get_random_timestamp(),
-            "message": get_random_string(random.randint(20, 150)),
-            "severity_ID": random.randint(1, 3),
-            "event_type_ID": random.randint(1, 6),
-            "source_ID": random.randint(1, 150)
+            "timestamp": timestamp,
+            "message": message,
+            "severity_ID": SAMPLE_DATA["severities"].index(severity) + 1,
+            "event_type_ID": SAMPLE_DATA["event_types"].index(event_type) + 1,
+            "source_ID": SAMPLE_DATA["sources"].index(source) + 1
         }
         data.append(entry)
     return data
-
-
-import json
-from datetime import datetime
 
 def process_data(operation, query_function=None):
     data = generate_data(100000)
@@ -315,8 +379,8 @@ def process_data(operation, query_function=None):
     time_durations = []
     
     # Define spans for insert and other operations
-    insert_spans = range(1, 20001, 1000)
-    other_spans = range(10, 100001, 10000)
+    insert_spans = [1, 10, 50, 100, 500, 1000, 5000, 10000, 50000, 100000]
+    other_spans = [1, 10, 50, 100, 500, 1000, 5000, 10000, 50000, 100000]
     
     if operation == "insert":
         for span in insert_spans:
@@ -341,14 +405,21 @@ def process_data(operation, query_function=None):
                     return json.dumps({'message': 'Error deleting data in MariaDb!'})
                 timestamp_end = datetime.now()
             elif operation == "update":
+                # Clear the table before inserting data
+                clear_result = clear_events_table()
+                if not clear_result:
+                    return json.dumps({'message': 'Error clearing Event table in MariaDb!'})
+                print(f"Table cleared for span {span}")
                 insert_result = insert_events_mariadb(temp_data)
                 if not insert_result:
                     return json.dumps({'message': 'Error saving data in MariaDb!'})
                 timestamp_start = datetime.now()
                 operation_result = update_simple_events_mariadb()
+                print("????")
                 if operation_result is None:
                     return json.dumps({'message': 'Error updating data in MariaDb!'})
                 timestamp_end = datetime.now()
+                time.sleep(10)
             elif operation == "query":
                 # Clear the table before inserting data
                 clear_result = clear_events_table()
@@ -372,11 +443,6 @@ def process_data(operation, query_function=None):
             time_durations.append({'span': span, 'duration': str(duration)})
     
     return json.dumps(time_durations)
-
-# Example usage
-result = process_data("insert")
-print(result)
-
 
 logging.basicConfig(level=logging.INFO)
 
@@ -416,7 +482,7 @@ def maria_delete():
 def maria_simple_query():
     return process_data("query", select_simple_events_mariadb)
 
-@app.get("/maria_simple_update")
+@app.get("/maria_update")
 def maria_simple_update():
     return process_data("update")
 
