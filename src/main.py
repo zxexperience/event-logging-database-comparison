@@ -199,6 +199,29 @@ def delete_events_mariadb(num_entries):
     """
     return execute_query(delete_query, (num_entries,))
 
+def select_all_events_mariadb():
+    """
+    Selects events from the MariaDB database based on specified criteria.
+
+    Returns:
+        list: A list of dictionaries, each containing the selected event data.
+    """
+    select_query_severity = """
+    SELECT * FROM Event
+    """
+    results = fetch_query_results(select_query_severity)
+    events_data = [
+        {
+            'timestamp': event[0],
+            'message': event[1],
+            'severity_ID': event[2],
+            'event_type_ID': event[3],
+            'source_ID': event[4]
+        }
+        for event in results
+    ]
+    return events_data
+
 def select_simple_events_mariadb():
     """
     Selects events from the MariaDB database based on specified criteria.
@@ -234,7 +257,7 @@ def select_join_events_mariadb():
     SELECT e.* FROM Event e
     JOIN Source s ON e.source_ID = s.id
     JOIN Location l ON s.location_id = l.id
-    WHERE l.country = 'Canada'
+    WHERE l.country = 'USA'
     """
     results = fetch_query_results(select_query_country)
     events_data = [
@@ -377,13 +400,13 @@ def generate_data(events_to_generate):
     return data
 
 def process_data(operation, query_function=None):
-    data = generate_data(100000)
+    data = generate_data(1000000)
     
     time_durations = []
     
     # Define spans for insert and other operations
-    insert_spans = [1, 10]
-    other_spans = [1, 10, 50, 100, 500, 1000, 5000, 10000, 50000, 100000]
+    insert_spans = [1, 10, 50, 100, 500, 1000, 5000, 10000, 50000, 100000, 200000]
+    other_spans = [1, 10, 50, 100, 500, 1000, 5000, 10000, 50000, 100000, 500000, 1000000]
     
     if operation == "insert":
         for span in insert_spans:
@@ -479,9 +502,13 @@ def maria_simple_query():
     return process_data("query", select_simple_events_mariadb)
 
 @app.get("/maria_update")
-def maria_simple_update():
+def maria_update():
     return process_data("update")
 
 @app.get("/maria_join_query")
 def maria_join_query():
     return process_data("query", select_join_events_mariadb)
+
+@app.get("/maria_all_query")
+def maria_all_query():
+    return process_data("query", select_all_events_mariadb)
