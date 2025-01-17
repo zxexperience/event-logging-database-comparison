@@ -2,8 +2,9 @@ import os
 import random
 import json
 import logging
+import string
 from fastapi import FastAPI
-from datetime import datetime
+from datetime import datetime, timedelta
 import mariadb
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
@@ -16,6 +17,7 @@ def get_mariadb_connection():
             user=os.environ['MARIADB_USER'],
             password=os.environ['MARIADB_PASSWORD'],
             database=os.environ['MARIADB_DATABASE'],
+            max_allowed_packet=1024 * 1024 * 256  # 64M
         )
     except mariadb.Error as e:
         print(f"Error: {e}")
@@ -136,7 +138,7 @@ def clear_events_table():
 
 def insert_events_mariadb(events_data):
     """
-    Inserts multiple events into the MariaDB database.
+    Inserts multiple events into the MariaDB database in chunks of 200,000 rows.
 
     Args:
         events_data (list): A list of dictionaries, each containing the following keys:
@@ -154,28 +156,31 @@ def insert_events_mariadb(events_data):
     VALUES (%s, %s, %s, %s, %s)
     """
 
-    values = [
-        (
-            event_data['timestamp'],
-            event_data['message'],
-            event_data['severity_ID'],
-            event_data['event_type_ID'],
-            event_data['source_ID']
-        )
-        for event_data in events_data
-    ]
-
+    chunk_size = 200000
     try:
         conn, cursor = get_db_connection()
-        cursor.executemany(insert_query, values)
-        conn.commit()
-        print(f"Inserted {len(values)} rows into the Event table.")
+        for i in range(0, len(events_data), chunk_size):
+            chunk = events_data[i:i + chunk_size]
+            values = [
+                (
+                    event_data['timestamp'],
+                    event_data['message'],
+                    event_data['severity_ID'],
+                    event_data['event_type_ID'],
+                    event_data['source_ID']
+                )
+                for event_data in chunk
+            ]
+            cursor.executemany(insert_query, values)
+            conn.commit()
+            print(f"Inserted {len(values)} rows into the Event table.")
         cursor.close()
         conn.close()
         return True
     except (mariadb.Error, ValueError) as e:
         print(f"Error inserting events into MariaDB: {e}")
         return False
+
 
 def delete_events_mariadb(num_entries):
     """
@@ -243,72 +248,135 @@ def select_join_events_mariadb():
     ]
     return events_data
 
-        
-def import_data_from_file(file_path):
+def update_simple_events_mariadb():
+    """
+    Selects events from the MariaDB database based on specified criteria.
+
+    Returns:
+        list: A list of dictionaries, each containing the selected event data.
+    """
+    select_query_severity = """
+    UPDATE Event 
+    SET severity_ID = 3 
+    WHERE severity_ID = 2
+    """
     try:
-        with open (file_path, 'r', encoding='utf-8-sig') as file:
-            data = json.load(file)
-            if isinstance(data, list):
-                logging.info("Successfully extracted JSON array from file.")
-                return data
-            else:
-                logging.error("Error: Expected a JSON array but found something else.")
-    except FileNotFoundError:
-        logging.error(f"Error: File not found: {file_path}")
-        return []
-    except json.JSONDecodeError as e:
-        logging.error(f"Error: Failed to decode JSON: {e}")
-        return []    
+        results = fetch_query_results(select_query_severity)
+        events_data = [
+            {
+                'timestamp': event[0],
+                'message': event[1],
+                'severity_ID': event[2],
+                'event_type_ID': event[3],
+                'source_ID': event[4]
+            }
+            for event in results
+        ]
+        return events_data
+    except Exception as e:
+        if "Cursor doesn't have a insert_result set" in str(e):
+            logging.warning("No insert_result set found, but continuing execution.")
+            return []
+        else:
+            logging.error(f"Error fetching query results: {e}")
+            return None
+
+
+def get_random_string(length):
+    chars = string.ascii_letters + string.digits
+    return ''.join(random.choice(chars) for _ in range(length))
+
+def get_random_timestamp():
+    start = datetime(2025, 1, 1)
+    end = datetime(2025, 12, 31)
+    random_date = start + timedelta(seconds=random.randint(0, int((end - start).total_seconds())))
+    return random_date.strftime("%Y-%m-%d %H:%M:%S")
+
+def generate_data(events_to_generate):
+    data = []
+    for _ in range(events_to_generate):
+        entry = {
+            "timestamp": get_random_timestamp(),
+            "message": get_random_string(random.randint(20, 150)),
+            "severity_ID": random.randint(1, 3),
+            "event_type_ID": random.randint(1, 6),
+            "source_ID": random.randint(1, 150)
+        }
+        data.append(entry)
+    return data
+
+
+import json
+from datetime import datetime
 
 def process_data(operation, query_function=None):
-    data = import_data_from_file("./data_100000.json")
-    if not data:
-        return {'message': 'JSON decoding error!'}
+    data = generate_data(100000)
     
     time_durations = []
-    spans = [1, 10, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000, 25000, 50000, 75000, 100000]
     
-    for span in spans:
-        temp_data = data[:span]
-        if operation == "insert":
-            timestamp_start = datetime.now()
-            result = insert_events_mariadb(temp_data)
-            if not result:
-                return {'message': 'Error saving data in MariaDb!'}
-            timestamp_end = datetime.now()
-        elif operation == "delete":
-            result = insert_events_mariadb(temp_data)
-            if not result:
-                return {'message': 'Error saving data in MariaDb!'}
-            timestamp_start = datetime.now()
-            result_2 = delete_events_mariadb(span)
-            if not result_2:
-                return {'message': 'Error deleting data in MariaDb!'}
-            timestamp_end = datetime.now()
-        elif operation == "query":
-            # Clear the table before inserting data
-            clear_result = clear_events_table()
-            if not clear_result:
-                return {'message': 'Error clearing Event table in MariaDb!'}
-            print(f"Table cleared for span {span}")
-            result = insert_events_mariadb(temp_data)
-            if not result:
-                return {'message': 'Error saving data in MariaDb!'}
-            print(f"Data inserted for span {span}")
-            timestamp_start = datetime.now()
-            result_2 = query_function()
-            if result_2 is None:
-                return {'message': 'Error querying data in MariaDb!'}
-            elif not result_2:
-                print(f"No matching records found for span {span}")
-            timestamp_end = datetime.now()
-            print(f"Data queried for span {span}")
-        
-        duration = timestamp_end - timestamp_start
-        time_durations.append((span, duration))
+    # Define spans for insert and other operations
+    insert_spans = range(1, 20001, 1000)
+    other_spans = range(10, 100001, 10000)
     
-    time_durations_str = ', '.join(f"Timespan for {span} is {duration}" for span, duration in time_durations)
-    return {'message': f"All good! {time_durations_str}"}
+    if operation == "insert":
+        for span in insert_spans:
+            temp_data = data[:span]
+            timestamp_start = datetime.now()
+            insert_result = insert_events_mariadb(temp_data)
+            if not insert_result:
+                return json.dumps({'message': 'Error saving data in MariaDb!'})
+            timestamp_end = datetime.now()
+            duration = timestamp_end - timestamp_start
+            time_durations.append({'span': span, 'duration': str(duration)})
+    else:
+        for span in other_spans:
+            temp_data = data[:span]
+            if operation == "delete":
+                insert_result = insert_events_mariadb(temp_data)
+                if not insert_result:
+                    return json.dumps({'message': 'Error saving data in MariaDb!'})
+                timestamp_start = datetime.now()
+                operation_result = delete_events_mariadb(span)
+                if not operation_result:
+                    return json.dumps({'message': 'Error deleting data in MariaDb!'})
+                timestamp_end = datetime.now()
+            elif operation == "update":
+                insert_result = insert_events_mariadb(temp_data)
+                if not insert_result:
+                    return json.dumps({'message': 'Error saving data in MariaDb!'})
+                timestamp_start = datetime.now()
+                operation_result = update_simple_events_mariadb()
+                if operation_result is None:
+                    return json.dumps({'message': 'Error updating data in MariaDb!'})
+                timestamp_end = datetime.now()
+            elif operation == "query":
+                # Clear the table before inserting data
+                clear_result = clear_events_table()
+                if not clear_result:
+                    return json.dumps({'message': 'Error clearing Event table in MariaDb!'})
+                print(f"Table cleared for span {span}")
+                insert_result = insert_events_mariadb(temp_data)
+                if not insert_result:
+                    return json.dumps({'message': 'Error saving data in MariaDb!'})
+                print(f"Data inserted for span {span}")
+                timestamp_start = datetime.now()
+                operation_result = query_function()
+                if operation_result is None:
+                    return json.dumps({'message': 'Error querying data in MariaDb!'})
+                elif not operation_result:
+                    print(f"No matching records found for span {span}")
+                timestamp_end = datetime.now()
+                print(f"Data queried for span {span}")
+            
+            duration = timestamp_end - timestamp_start
+            time_durations.append({'span': span, 'duration': str(duration)})
+    
+    return json.dumps(time_durations)
+
+# Example usage
+result = process_data("insert")
+print(result)
+
 
 logging.basicConfig(level=logging.INFO)
 
@@ -318,7 +386,7 @@ app = FastAPI()
 #def startup_event():
 #    data = import_data_from_file("./data_1000.json")
 #    for record in data:
-#       result = insert_event_mariadb(record)
+#       insert_result = insert_event_mariadb(record)
 #       if (not result):
 #           logging.warning("Error saving data in MariaDb")
 
@@ -347,6 +415,10 @@ def maria_delete():
 @app.get("/maria_simple_query")
 def maria_simple_query():
     return process_data("query", select_simple_events_mariadb)
+
+@app.get("/maria_simple_update")
+def maria_simple_update():
+    return process_data("update")
 
 @app.get("/maria_join_query")
 def maria_join_query():
