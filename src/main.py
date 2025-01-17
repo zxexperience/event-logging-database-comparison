@@ -249,38 +249,41 @@ def select_join_events_mariadb():
     ]
     return events_data
 
-def update_simple_events_mariadb():
+
+import logging
+import time
+
+def update_simple_events_mariadb(retries=3, delay=5):
     """
-    Selects events from the MariaDB database based on specified criteria.
+    Updates events in the MariaDB database based on specified criteria.
+
+    Args:
+        retries (int): Number of times to retry the update in case of lock wait timeout.
+        delay (int): Delay in seconds between retries.
 
     Returns:
-        list: A list of dictionaries, each containing the selected event data.
+        bool: True if the update was successful, False otherwise.
     """
-    select_query_severity = """
+    update_query_severity = """
     UPDATE Event 
     SET severity_ID = 3 
     WHERE severity_ID = 2
     """
-    try:
-        results = fetch_query_results(select_query_severity)
-        events_data = [
-            {
-                'timestamp': event[0],
-                'message': event[1],
-                'severity_ID': event[2],
-                'event_type_ID': event[3],
-                'source_ID': event[4]
-            }
-            for event in results
-        ]
-        return events_data
-    except Exception as e:
-        if "Cursor doesn't have a insert_result set" in str(e):
-            logging.warning("No insert_result set found, but continuing execution.")
-            return []
-        else:
-            logging.error(f"Error fetching query results: {e}")
-            return None
+    for attempt in range(retries):
+        try:
+            # Execute the update query without fetching results
+            execute_query(update_query_severity)
+            return True
+        except Exception as e:
+            if "Lock wait timeout exceeded" in str(e):
+                logging.warning(f"Lock wait timeout exceeded. Retrying in {delay} seconds... (Attempt {attempt + 1}/{retries})")
+                time.sleep(delay)
+            else:
+                logging.error(f"Error executing query: {e}")
+                return False
+    logging.error("Failed to update events after multiple attempts.")
+    return False
+
 
 SAMPLE_DATA = {
     "severities": [
@@ -379,7 +382,7 @@ def process_data(operation, query_function=None):
     time_durations = []
     
     # Define spans for insert and other operations
-    insert_spans = [1, 10, 50, 100, 500, 1000, 5000, 10000, 50000, 100000]
+    insert_spans = [1, 10]
     other_spans = [1, 10, 50, 100, 500, 1000, 5000, 10000, 50000, 100000]
     
     if operation == "insert":
@@ -405,21 +408,14 @@ def process_data(operation, query_function=None):
                     return json.dumps({'message': 'Error deleting data in MariaDb!'})
                 timestamp_end = datetime.now()
             elif operation == "update":
-                # Clear the table before inserting data
-                clear_result = clear_events_table()
-                if not clear_result:
-                    return json.dumps({'message': 'Error clearing Event table in MariaDb!'})
-                print(f"Table cleared for span {span}")
-                insert_result = insert_events_mariadb(temp_data)
-                if not insert_result:
+                result = insert_events_mariadb(temp_data)
+                if not result:
                     return json.dumps({'message': 'Error saving data in MariaDb!'})
                 timestamp_start = datetime.now()
-                operation_result = update_simple_events_mariadb()
-                print("????")
-                if operation_result is None:
+                result_2 = update_simple_events_mariadb()
+                if not result_2:
                     return json.dumps({'message': 'Error updating data in MariaDb!'})
                 timestamp_end = datetime.now()
-                time.sleep(10)
             elif operation == "query":
                 # Clear the table before inserting data
                 clear_result = clear_events_table()
